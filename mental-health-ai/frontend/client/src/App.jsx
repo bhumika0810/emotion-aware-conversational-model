@@ -43,6 +43,35 @@ function AiCard({ severity, score, support_message }) {
   );
 }
 
+/* ── Friend bubble (Alex mode) ───────────────────────────── */
+function FriendBubble({ text, mood }) {
+  const moodConfig = {
+    crisis:  { emoji: "💜", bg: "#f3f0ff", border: "#c4b5fd", label: "here for you" },
+    low:     { emoji: "🫂",  bg: "#fff7ed", border: "#fed7aa", label: "checking in" },
+    okay:    { emoji: "☁️",  bg: "#f0f9ff", border: "#bae6fd", label: null },
+    good:    { emoji: null,  bg: null,      border: null,      label: null },
+  };
+  const cfg = moodConfig[mood] || moodConfig.good;
+
+  return (
+    <div style={{
+      background: cfg.bg || "transparent",
+      border: cfg.border ? `1px solid ${cfg.border}` : "none",
+      borderRadius: 16,
+      padding: cfg.bg ? "10px 14px" : "0",
+      maxWidth: "100%",
+    }}>
+      {cfg.label && (
+        <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
+          {cfg.emoji} <span>{cfg.label}</span>
+        </div>
+      )}
+      <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: "#1f2937", whiteSpace: "pre-wrap" }}>
+        {text}
+      </p>
+    </div>
+  );
+}
 /* ── Signup modal ────────────────────────────────────────── */
 function SignupModal({ onClose }) {
   const [tab, setTab]       = useState("signup"); // "signup" | "login"
@@ -188,6 +217,7 @@ export default function App() {
   const [showCrisis,    setShowCrisis]    = useState(false);
   const [showSignup,    setShowSignup]    = useState(false);
   const [showHistory,   setShowHistory]   = useState(false);
+  const [friendMode,    setFriendMode]    = useState(false);
   // chatSessions persists across "Start chat" restarts
   const [chatSessions,  setChatSessions]  = useState([]);
   const bottomRef = useRef(null);
@@ -196,37 +226,57 @@ export default function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({behavior:"smooth"});
   }, [messages, loading]);
+  
 
+// Show data.reply as Alex's message
+// Use data.mood to quietly update a vibe indicator
+// If data.is_crisis === true, show a soft "you're not alone" banner
+  // Replace your existing send() function with this:
   const send = async (text) => {
-    text = (text || input).trim();
-    if (!text || loading) return;
-    setChatOpen(true);
-    setMessages(p => [...p, {role:"user",type:"text",text}]);
-    setInput("");
-    setLoading(true);
-    try {
-      const res = await fetch("http://127.0.0.1:8000/predict", {
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({text}),
-      });
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      if (data.is_crisis ) {
-        setShowCrisis(true);
-      }
+  text = (text || input).trim();
+  if (!text || loading) return;
+  setChatOpen(true);
+  setMessages(p => [...p, { role: "user", type: "text", text }]);
+  setInput("");
+  setLoading(true);
+  try {
+    const endpoint = friendMode ? "/chat" : "/predict";
+    const res = await fetch(`http://127.0.0.1:8000${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+
+    if (data.is_crisis) setShowCrisis(true);
+
+    if (friendMode) {
+      // Alex replies like a friend — no clinical card shown
       setMessages(p => [...p, {
-        role:"ai", type:"response",
-        risk_score: data.risk_score,
-        severity:         data.severity,
-        mood:            data.mood,
-        support_message:  data.support_message,
-        is_crisis:        data.is_crisis,
+        role: "ai",
+        type: "friend",
+        text: data.reply,
+        mood: data.mood,
+        is_crisis: data.is_crisis,
+        severity: data.mood === "crisis" ? "High" : data.mood === "low" ? "High" : data.mood === "okay" ? "Moderate" : "Low",
       }]);
-    } catch {
-      setMessages(p => [...p, {role:"ai",type:"text",text:"⚠️ Couldn't reach the server. Please try again."}]);
-    } finally { setLoading(false); }
+    } else {
+      setMessages(p => [...p, {
+        role: "ai",
+        type: "response",
+        risk_score: data.risk_score,
+        severity: data.severity,
+        mood: data.mood,
+        support_message: data.support_message,
+        is_crisis: data.is_crisis,
+      }]);
+    }
+  } catch {
+    setMessages(p => [...p, { role: "ai", type: "text", text: "⚠️ Couldn't reach the server. Please try again." }]);
+  } finally { setLoading(false); }
   };
+
 
   // Save current chat to history FIRST, then reset — history is never lost
   const handleStartChat = () => {
@@ -352,9 +402,7 @@ export default function App() {
                 ) : (
                   <div className="msg-row ai" key={i}>
                     <div className="bubble ai-bubble">
-                      {m.type==="response"
-                        ? <AiCard severity={m.severity} score={m.risk_score} support_message={m.support_message}/>
-                        : m.text}
+                      {m.type === "response" ? <AiCard severity={m.severity} score={m.risk_score} support_message={m.support_message} /> : m.type === "friend" ? <FriendBubble text={m.text} mood={m.mood} /> : m.text}
                     </div>
                   </div>
                 )
@@ -381,14 +429,21 @@ export default function App() {
             />
             <div className="input-right">
               <span className="model-tag">Model <strong>MindAI 1.4</strong></span>
-              <button className="style-btn">✦ Wellness mode</button>
               <button className="send-pill" onClick={() => send()} disabled={loading||!input.trim()}>
                 {loading ? "…" : "Send ↗"}
+              </button>
+              <button className="style-btn" onClick={() => setFriendMode(f => !f)}
+              style={{ 
+                background: friendMode ? "linear-gradient(135deg,#818cf8,#a78bfa)" : "", 
+                color: friendMode ? "#fff" : "",
+                border: friendMode ? "none" : "",
+              }}
+              >
+                {friendMode ? "🤙 Alex mode" : "✦ Wellness mode"}
               </button>
             </div>
           </div>
         </div>
-
         {/* Action pills */}
         <div className="action-pills">
           {ACTIONS.map(a => (

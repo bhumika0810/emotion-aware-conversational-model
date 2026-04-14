@@ -51,6 +51,11 @@ class TATScene(BaseModel):
 class TATRequest(BaseModel):
     scenes: List[TATScene]
 
+# Add to your Data Models section (section 3)
+class ChatInput(BaseModel):
+    message: str
+    session_id: str = "default"    
+
 # 4. HELPER FUNCTIONS
 def generate_support_response(user_message, severity, history):
     try:
@@ -91,7 +96,70 @@ def generate_support_response(user_message, severity, history):
     except Exception as e:
         print(f"Ollama Error: {e}")
         return "I'm listening. Can you tell me more about that?"
+# Add this helper function (section 4, after generate_support_response)
+def generate_friend_response(user_message: str, severity: str, is_crisis: bool, history):
+    """
+    Responds like a casual friend. Depression detection runs silently.
+    Only escalates tone if severity is genuinely high or crisis detected.
+    """
+    
+    if is_crisis:
+        tone_instruction = """
+        The user may be in crisis. Be warm, present, and caring like a close friend who genuinely cares.
+        Gently mention that talking to someone trained to help (like iCall: 9152987821) might feel good.
+        Do NOT be clinical or robotic. Stay a friend first.
+        """
+    elif severity == "High":
+        tone_instruction = """
+        The user seems to be having a really tough time emotionally.
+        Be extra warm and present. Ask gentle follow-up questions. 
+        Don't diagnose or lecture — just be there like a good friend would.
+        """
+    elif severity == "Moderate":
+        tone_instruction = """
+        The user seems a bit off or stressed. Be warm and check in naturally,
+        like a friend who notices something's up but doesn't make it a big deal.
+        """
+    else:
+        tone_instruction = """
+        The user seems fine or positive. Just be a fun, casual, supportive friend.
+        Keep the energy light and engaging.
+        """
 
+    system_prompt = f"""
+You are Alex, a warm, funny, casual best friend the user can talk to anytime. Your personality:
+- Text like a real friend: mostly lowercase, short sentences, contractions
+- Use natural expressions occasionally: "ngl", "tbh", "omg", "haha", "fr", "ugh" — but don't overdo it
+- Keep replies SHORT: 1-4 sentences max. Friends don't write essays.
+- Ask ONE follow-up question naturally when it fits
+- Be supportive without being preachy, clinical, or therapist-like
+- Use emojis occasionally, not every sentence
+- NEVER say you are an AI or a mental health bot
+- NEVER mention "depression", "mental health", "severity", or clinical terms unprompted
+
+Tone guidance for this message:
+{tone_instruction}
+"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Include last 5 messages of history for context
+    for chat in history:
+        messages.append({"role": "user",      "content": chat.user_message})
+        messages.append({"role": "assistant",  "content": chat.ai_response})
+
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        response = client.chat.completions.create(
+            model="llama3.2:1b",
+            messages=messages,
+            temperature=0.85,  # slightly higher = more natural/varied friend responses
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Friend response error: {e}")
+        return "haha sorry my brain just blanked 😅 what were you saying?"
 
 def analyze_tat_stories(scenes: List[TATScene]) -> dict:
     """Send TAT stories to Ollama and get back a structured JSON analysis."""
@@ -277,3 +345,74 @@ def tat_analyze(req: TATRequest):
     except Exception as e:
         print(f"TAT analysis error: {e}")
         raise
+# Add this endpoint (section 5, after /tat-analyze)
+@app.post("/chat")
+def chat(input_data: TextInput):
+    """
+    Friendly companion chat endpoint.
+    - DistilBERT runs silently to detect depression risk
+    - Alex (the AI friend) responds based on severity, but never mentions it
+    - Saves to same Chat DB table as /predict
+    """
+
+    # Step 1: Run DistilBERT silently (same logic as /predict)
+    inputs = tokenizer(input_data.text, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    probabilities = F.softmax(outputs.logits, dim=1)
+    risk_score = probabilities[0][1].item()
+
+    positive_keywords = [
+        "i feel good", "i am happy", "feeling great", "i feel great",
+        "i am okay", "i feel okay", "feeling relaxed", "i feel relaxed",
+        "feeling better", "i feel better", "i am fine", "feeling fine",
+        "i am well", "feeling calm", "i feel calm", "i feel peaceful",
+        "good today", "happy today", "doing well", "feeling positive"
+    ]
+    if any(kw in input_data.text.lower() for kw in positive_keywords):
+        risk_score = risk_score * 0.3
+
+    crisis_keywords = [
+        "kill myself", "want to die", "suicide", "end my life",
+        "i dont want to live", "i want to die", "i feel hopeless"
+    ]
+    is_crisis = any(word in input_data.text.lower() for word in crisis_keywords)
+
+    if is_crisis or risk_score > 0.85:
+        severity = "High"
+    elif risk_score > 0.6:
+        severity = "Moderate"
+    else:
+        severity = "Low"
+
+    # Step 2: Fetch conversation history
+    db = SessionLocal()
+    history = db.query(Chat).order_by(Chat.id.desc()).limit(5).all()
+    history.reverse()
+
+    # Step 3: Generate friendly response (Alex, not clinical bot)
+    friend_reply = generate_friend_response(input_data.text, severity, is_crisis, history)
+
+    # Step 4: Save to DB (reusing same Chat model)
+    new_chat = Chat(
+        user_message=input_data.text,
+        ai_response=friend_reply,
+        severity=severity
+    )
+    db.add(new_chat)
+    db.commit()
+    db.close()
+
+    # Step 5: Return — frontend only needs the message + optional mood signal
+    return {
+        "reply": friend_reply,
+        "mood": (
+            "crisis" if is_crisis else
+            "low"    if severity == "High" else
+            "okay"   if severity == "Moderate" else
+            "good"
+        ),
+        # is_crisis kept for frontend to optionally show a subtle care banner
+        "is_crisis": is_crisis
+    }
