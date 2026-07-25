@@ -1,5 +1,3 @@
-import torch
-import torch.nn.functional as F
 import os
 import traceback
 from pathlib import Path
@@ -10,7 +8,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
-from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
 import json
 
 # Import your database tools
@@ -37,15 +34,7 @@ app.add_middleware(
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
-# 2. LOAD SENTIMENT MODEL (DistilBERT)
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-model_path = "model/depression_model"
-tokenizer = DistilBertTokenizerFast.from_pretrained(model_path)
-model = DistilBertForSequenceClassification.from_pretrained(model_path)
-model.to(device)
-model.eval()
-
-# 3. DATA MODELS
+# 2. DATA MODELS
 class TextInput(BaseModel):
     text: str
 
@@ -98,6 +87,55 @@ def generate_gemini_response(system_instruction: str, messages: list, temperatur
         print(f"Gemini response: {getattr(error_response, 'text', error_response)}")
         traceback.print_exc()
         raise
+
+
+POSITIVE_KEYWORDS = [
+    "i feel good", "i am happy", "feeling great", "i feel great",
+    "i am okay", "i feel okay", "feeling relaxed", "i feel relaxed",
+    "feeling better", "i feel better", "i am fine", "feeling fine",
+    "i am well", "feeling calm", "i feel calm", "i feel peaceful",
+    "good today", "happy today", "doing well", "feeling positive",
+]
+
+CRISIS_KEYWORDS = [
+    "kill myself", "want to die", "suicide", "end my life",
+    "i dont want to live", "i want to die", "i feel hopeless",
+]
+
+
+def analyze_message_risk(user_message: str):
+    """Use Gemini for the risk score previously produced by the local model."""
+    system_prompt = """Assess the emotional risk expressed in the user's message.
+Return ONLY valid JSON in this exact format: {"risk_score": 0.0}.
+`risk_score` must be a number from 0.0 (positive or stable) to 1.0 (acute emotional distress).
+Base the score only on the user's message; do not provide advice or extra fields."""
+    try:
+        raw = generate_gemini_response(
+            system_prompt,
+            [{"role": "user", "content": user_message}],
+            temperature=0.0,
+        )
+        clean = raw.replace("```json", "").replace("```", "").strip()
+        start, end = clean.find("{"), clean.rfind("}") + 1
+        payload = json.loads(clean[start:end] if start != -1 and end > start else clean)
+        risk_score = max(0.0, min(1.0, float(payload["risk_score"])))
+    except Exception as error:
+        print(f"Gemini prediction error: {error}")
+        risk_score = 0.5
+
+    user_text = user_message.lower()
+    if any(keyword in user_text for keyword in POSITIVE_KEYWORDS):
+        risk_score *= 0.3
+    is_crisis = any(keyword in user_text for keyword in CRISIS_KEYWORDS)
+
+    if is_crisis or risk_score > 0.85:
+        severity = "High"
+    elif risk_score > 0.6:
+        severity = "Moderate"
+    else:
+        severity = "Low"
+
+    return risk_score, severity, is_crisis
 
 
 def generate_support_response(user_message, severity, history):
@@ -255,48 +293,8 @@ Rules:
 
 @app.post("/predict")
 def predict(input_data: TextInput):
-    # A. Run DistilBERT for Score
-    inputs = tokenizer(input_data.text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = model(**inputs)
-
-    probabilities = F.softmax(outputs.logits, dim=1)
-    risk_score = probabilities[0][1].item()
-    # Reduce false positives for clearly positive sentences
-    positive_keywords = [
-    "i feel good", "i am happy", "feeling great", "i feel great",
-    "i am okay", "i feel okay", "feeling relaxed", "i feel relaxed",
-    "feeling better", "i feel better", "i am fine", "feeling fine",
-    "i am well", "feeling calm", "i feel calm", "i feel peaceful",
-    "good today", "happy today", "doing well", "feeling positive"
-    ]
-
-    user_text = input_data.text.lower()
-
-    if any(kw in user_text for kw in positive_keywords):
-        risk_score = risk_score * 0.3
-    
-    crisis_keywords = [
-    "kill myself",
-    "want to die",
-    "suicide",
-    "end my life",
-    "i dont want to live",
-    "i want to die",
-    "i feel hopeless"
-    ]
-
-    user_text = input_data.text.lower()
-    is_crisis = any(word in user_text for word in crisis_keywords)
-
-    if is_crisis:
-        severity = "High"
-    elif risk_score > 0.85:
-        severity = "High"
-    elif risk_score > 0.6:
-        severity = "Moderate"
-    else:
-        severity = "Low"
+    # A. Get Gemini risk assessment while preserving existing score thresholds.
+    risk_score, severity, is_crisis = analyze_message_risk(input_data.text)
 
     if risk_score > 0.85:
         mood = "Awful"
@@ -309,8 +307,7 @@ def predict(input_data: TextInput):
     else:
         mood = "Great"
 
-    print("Model probabilities:", probabilities)
-    print("Risk score:", risk_score)
+    print("Gemini risk score:", risk_score)
 
     # C. Fetch History
     db = SessionLocal()
@@ -377,41 +374,13 @@ def tat_analyze(req: TATRequest):
 def chat(input_data: TextInput):
     """
     Friendly companion chat endpoint.
-    - DistilBERT runs silently to detect depression risk
+    - Gemini runs silently to detect emotional risk
     - Alex (the AI friend) responds based on severity, but never mentions it
     - Saves to same Chat DB table as /predict
     """
 
-    # Step 1: Run DistilBERT silently (same logic as /predict)
-    inputs = tokenizer(input_data.text, return_tensors="pt").to(device)
-    with torch.no_grad():
-        outputs = model(**inputs)
-
-    probabilities = F.softmax(outputs.logits, dim=1)
-    risk_score = probabilities[0][1].item()
-
-    positive_keywords = [
-        "i feel good", "i am happy", "feeling great", "i feel great",
-        "i am okay", "i feel okay", "feeling relaxed", "i feel relaxed",
-        "feeling better", "i feel better", "i am fine", "feeling fine",
-        "i am well", "feeling calm", "i feel calm", "i feel peaceful",
-        "good today", "happy today", "doing well", "feeling positive"
-    ]
-    if any(kw in input_data.text.lower() for kw in positive_keywords):
-        risk_score = risk_score * 0.3
-
-    crisis_keywords = [
-        "kill myself", "want to die", "suicide", "end my life",
-        "i dont want to live", "i want to die", "i feel hopeless"
-    ]
-    is_crisis = any(word in input_data.text.lower() for word in crisis_keywords)
-
-    if is_crisis or risk_score > 0.85:
-        severity = "High"
-    elif risk_score > 0.6:
-        severity = "Moderate"
-    else:
-        severity = "Low"
+    # Step 1: Run Gemini silently (same thresholds as /predict)
+    risk_score, severity, is_crisis = analyze_message_risk(input_data.text)
 
     # Step 2: Fetch conversation history
     db = SessionLocal()

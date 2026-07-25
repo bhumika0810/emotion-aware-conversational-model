@@ -3,6 +3,4 @@ google-genai
 python-dotenv
 pydantic
 sqlalchemy
-torch
-transformers
 uvicorn
