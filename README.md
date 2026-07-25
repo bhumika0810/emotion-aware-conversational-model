@@ -1,196 +1,212 @@
 # 🧠 Emotion Aware Conversational Model (EACM)
 
-> A personal AI-powered mental health companion that analyzes your mood, detects emotional distress, and provides compassionate support — built with React, FastAPI, and local LLMs.
+> An AI-powered mental health companion that helps users analyze emotions, monitor mood trends, maintain a wellness journal, and receive supportive conversations using Google Gemini AI.
 
 ---
 
 ## ✨ Features
 
-- 💬 **AI Chat** — Talk to a supportive AI powered by Llama 3.2 (via Ollama) that responds empathetically based on your emotional state
-- 📊 **Mood Analysis** — Visual weekly mood chart that tracks your emotional trends over time across sessions
-- 🧠 **Mental Check (TAT Test)** — A 5-scene Thematic Apperception Test that generates a full psychological profile using AI
-- 📝 **Journal** — A weekly planner with mood tracking, daily priorities, tasks, and meal planning
-- ✨ **Crisis Support** — Auto-detects crisis keywords and routes users to breathing exercises, grounding techniques, and emergency helplines
-- 🔍 **Session History** — Every chat session is saved with severity, mood score, and timestamps
+* 💬 **AI Chat** – Emotion-aware conversations powered by **Google Gemini AI**
+* 📊 **Mood Analysis** – Tracks emotional trends with an interactive weekly mood chart
+* 🧠 **Mental Health Check** – AI-assisted Thematic Apperception Test (TAT) for reflective psychological insights
+* 📝 **Journal** – Weekly planner with mood tracking, goals, meals, and daily notes
+* 🚨 **Crisis Detection** – Detects high-risk emotional messages and provides immediate support resources
+* 📚 **Session History** – Stores conversations and mood analysis for progress tracking
 
 ---
 
-## 🛠️ Tech Stack
+## 🚀 Live Demo
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | React + Vite |
-| Styling | Custom CSS (glassmorphism) |
-| Backend | FastAPI (Python) |
-| ML Model | DistilBERT (fine-tuned for depression detection) |
-| Local LLM | Llama 3.2 via Ollama |
-| Database | SQLite via SQLAlchemy |
+**Frontend (Vercel)**
+
+`https://emotion-aware-conversational-model-iota.vercel.app`
+
+**Backend API (Render)**
+
+`https://emotion-aware-conversational-model.onrender.com`
 
 ---
 
-## 📁 Project Structure
+## 🛠 Tech Stack
 
-```
-mindspace/
+| Layer           | Technology             |
+| --------------- | ---------------------- |
+| Frontend        | React + Vite           |
+| Styling         | CSS (Glassmorphism UI) |
+| Backend         | FastAPI                |
+| AI              | Google Gemini API      |
+| Database        | SQLite + SQLAlchemy    |
+| Deployment      | Vercel + Render        |
+| Version Control | Git & GitHub           |
+
+---
+
+## 📂 Project Structure
+
+```text
+mental-health-ai/
+│
+├── backend/
+│   ├── app.py
+│   ├── database.py
+│   ├── models.py
+│   ├── requirements.txt
+│   └── mental_health.db
+│
 ├── frontend/
 │   └── client/
-│       └── src/
-│           ├── App.jsx            # Main app, routing, chat logic
-│           ├── App.css            # All styles
-│           ├── MoodChart.jsx      # Mood analysis page
-│           ├── moodConstants.js   # Severity → mood mapping
-│           ├── JournalPage.jsx    # Weekly journal planner
-│           ├── TATPage.jsx        # TAT psychological test
-│           └── CrisisPage.jsx     # Crisis intervention page
-└── backend/
-    ├── main.py                    # FastAPI server + endpoints
-    ├── models.py                  # SQLAlchemy DB models
-    ├── database.py                # DB session setup
-    └── model/
-        └── depression_model/      # Fine-tuned DistilBERT model files
+│       ├── src/
+│       │   ├── App.jsx
+│       │   ├── MoodChart.jsx
+│       │   ├── MoodConstants.js
+│       │   ├── JournalPage.jsx
+│       │   ├── TATPage.jsx
+│       │   ├── CrisisPage.jsx
+│       │   └── assets/
+│       ├── package.json
+│       └── vite.config.js
+│
+└── README.md
 ```
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Running Locally
 
-### Prerequisites
-
-- Node.js 18+
-- Python 3.10+
-- [Ollama](https://ollama.com) installed and running
-- Llama 3.2 model pulled
+### Clone
 
 ```bash
-ollama pull llama3.2:1b
+git clone https://github.com/bhumika0810/emotion-aware-conversational-model.git
+
+cd emotion-aware-conversational-model
 ```
 
 ---
 
-### 1. Clone the repo
+### Backend
 
 ```bash
-git clone https://github.com/yourusername/mindspace-ai.git
-cd mindspace-ai
+cd mental-health-ai/backend
+
+pip install -r ../requirements.txt
+
+uvicorn app:app --reload
 ```
 
-### 2. Backend Setup
+Runs on
 
-```bash
-cd backend
-pip install fastapi uvicorn transformers torch openai sqlalchemy pydantic
+```
+http://127.0.0.1:8000
 ```
 
-Start the backend:
+---
+
+### Frontend
 
 ```bash
-uvicorn main:app --reload
-```
+cd mental-health-ai/frontend/client
 
-Backend runs at `http://127.0.0.1:8000`
-
-### 3. Frontend Setup
-
-```bash
-cd frontend/client
 npm install
+
 npm run dev
 ```
 
-Frontend runs at `http://localhost:5173`
+Runs on
 
-### 4. Make sure Ollama is running
-
-```bash
-ollama serve
+```
+http://localhost:5173
 ```
 
 ---
 
-## 🔌 API Endpoints
+## API Endpoints
 
-### `POST /predict`
-Analyzes user text for emotional state.
+### POST `/predict`
 
-**Request:**
-```json
-{ "text": "I feel really anxious today" }
-```
+Analyzes the user's emotional state.
 
-**Response:**
 ```json
 {
-  "risk_score": 0.823,
-  "severity": "High",
-  "mood": "Bad",
-  "support_message": "I hear you...",
-  "is_crisis": false
+  "text":"I feel anxious today"
 }
 ```
 
-### `POST /tat-analyze`
-Analyzes TAT stories and returns a psychological profile.
+---
 
-**Request:**
-```json
-{
-  "scenes": [
-    { "theme": "solitude & reflection", "story": "A person stands alone..." }
-  ]
-}
-```
+### POST `/chat`
 
-**Response:** Full JSON profile with traits, themes, emotional tone, and growth areas.
+Generates an empathetic AI response.
 
 ---
 
-## 🧩 How It Works
+### POST `/tat-analyze`
 
-1. User types a message in the chat
-2. Frontend sends it to `/predict`
-3. DistilBERT model computes a **risk score** (0.0 → 1.0)
-4. Risk score maps to **severity** (Low / Moderate / High) and **mood** (Great → Awful)
-5. If crisis keywords are detected (`"want to die"`, `"suicide"`, etc.), the crisis page opens automatically
-6. Ollama (Llama 3.2) generates a warm, context-aware support message
-7. Session is saved to SQLite with severity + timestamp
-8. MoodChart visualizes sessions week by week
+Generates a psychological summary from TAT responses.
 
 ---
 
-## 📸 Pages
+## How It Works
 
-| Page | Description |
-|------|-------------|
-| 🏠 Home | Chat interface with action pills |
-| 📊 Mood Analysis | Weekly chart, session history, mood insights |
-| 🧠 Mental Check | 5-scene TAT test with AI-generated psychological profile |
-| 📝 Journal | Weekly planner with tasks, moods, meals |
-| ✨ Crisis Support | Breathing exercise, 5-4-3-2-1 grounding, Indian helplines |
-
----
-
-## 🆘 Crisis Resources (India)
-
-| Helpline | Number |
-|----------|--------|
-| iCall | 9152987821 |
-| Vandrevala Foundation | 1860-2662-345 |
-| AASRA | 9820466627 |
-| Snehi | 044-24640050 |
-| Emergency | 112 |
+1. User submits a message.
+2. FastAPI processes the request.
+3. Gemini analyzes emotional severity.
+4. The backend classifies mood and detects crisis situations.
+5. AI generates a supportive response.
+6. Sessions are stored in SQLite.
+7. Mood trends are visualized in the dashboard.
 
 ---
 
-## ⚠️ Disclaimer
+## Screenshots
+* Home Page
+<img width="1202" height="801" alt="Screenshot 2026-07-25 at 7 15 31 PM" src="https://github.com/user-attachments/assets/8b64cf2d-f97d-4e23-9299-14b1815d19d3" />
 
-MindSpace AI is **not a substitute for professional mental health care**. It is an educational and supportive tool only. If you or someone you know is in crisis, please contact a licensed mental health professional or emergency services immediately.
+* AI Chat
+<img width="987" height="799" alt="Screenshot 2026-07-25 at 7 16 13 PM" src="https://github.com/user-attachments/assets/74932668-d7f5-44ec-8bd4-618540f11eb9" />
+
+* Mood Analysis
+<img width="1301" height="801" alt="Screenshot 2026-07-25 at 7 16 51 PM" src="https://github.com/user-attachments/assets/947716b2-b0d8-43d8-bf84-203a7f8aa0c4" />
+
+* Mental Health Check
+<img width="1214" height="800" alt="Screenshot 2026-07-25 at 7 17 24 PM" src="https://github.com/user-attachments/assets/aea9e8d3-6371-4d26-8e02-e09a3455c2b7" />
+
+* Journal
+<img width="1391" height="802" alt="Screenshot 2026-07-25 at 7 17 49 PM" src="https://github.com/user-attachments/assets/e1a86ae1-4adf-4d85-97f5-2a416e3972f8" />
+
+* Crisis Support
+<img width="1140" height="800" alt="Screenshot 2026-07-25 at 7 18 28 PM" src="https://github.com/user-attachments/assets/92055482-2415-4239-98c3-9819c37f4c90" />
+<img width="1054" height="801" alt="Screenshot 2026-07-25 at 7 18 47 PM" src="https://github.com/user-attachments/assets/eed6aaa4-7924-435c-8fb2-a9c3d709e504" />
+
 
 ---
 
-## 📄 License
+## Future Improvements
 
-MIT License — feel free to use, modify, and distribute.
+* User authentication
+* Cloud database (PostgreSQL)
+* Voice conversations
+* Multi-language support
+* Emotion analytics dashboard
+* Therapist dashboard
+* Mobile application
 
 ---
 
-> Built with 💜 by Bhumika 
+## Disclaimer
+
+This application is intended for educational and supportive purposes only. It is **not** a substitute for professional mental health care. If someone is experiencing a mental health emergency, they should contact local emergency services or a licensed mental health professional.
+
+---
+
+## License
+
+MIT License
+
+---
+
+# 👩‍💻 Author
+
+**Bhumika Singh**
+
+GitHub: [https://github.com/bhumika0810](https://github.com/bhumika0810)
+
