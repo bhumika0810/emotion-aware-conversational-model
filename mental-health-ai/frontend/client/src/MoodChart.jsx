@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
-import { SEV_TO_MOOD, MOOD_TO_DISPLAY, DEFAULT_MOOD } from "./moodConstants";
+import { SEV_TO_MOOD, MOOD_TO_DISPLAY, DEFAULT_MOOD } from "./MoodConstants";
 
 const DAYS = ["MON","TUE","WED","THU","FRI","SAT","SUN"];
 
