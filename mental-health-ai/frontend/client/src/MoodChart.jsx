@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 import { SEV_TO_MOOD, MOOD_TO_DISPLAY, DEFAULT_MOOD } from "./moodConstants";
@@ -13,8 +13,50 @@ const MOOD_OPTIONS = [
   { label:"GREAT", emoji:"😊", color:"#4CAF72", bg:"#4CAF72" },
 ];
 
-/* Build 7-day mood data grouped by ACTUAL date of each session */
-function buildMoodData(chatSessions, weekOffset) {
+const FRIEND_MOOD_TO_DISPLAY = {
+  crisis: { value: 1, emoji: "😞", color: "#EF5350", label: "Awful" },
+  low:    { value: 2, emoji: "😕", color: "#7BB8D9", label: "Bad" },
+  okay:   { value: 3, emoji: "😐", color: "#E8B84B", label: "Okay" },
+  good:   { value: 4, emoji: "🙂", color: "#7BC67E", label: "Good" },
+};
+
+function getMoodForScore(value) {
+  const mood = [...Object.values(FRIEND_MOOD_TO_DISPLAY), ...Object.values(MOOD_TO_DISPLAY)]
+    .find(item => item.value === Math.round(value)) || DEFAULT_MOOD;
+  const labels = ["Awful", "Bad", "Okay", "Good", "Great"];
+  return mood.label ? mood : { ...mood, label: labels[mood.value - 1] || "Okay" };
+}
+
+function getMoodDisplay(message) {
+  const mood = message?.mood;
+  if (FRIEND_MOOD_TO_DISPLAY[mood]) return FRIEND_MOOD_TO_DISPLAY[mood];
+  if (MOOD_TO_DISPLAY[mood]) {
+    const display = MOOD_TO_DISPLAY[mood];
+    return { ...display, label: mood };
+  }
+  return SEV_TO_MOOD[message?.severity?.toLowerCase()] || DEFAULT_MOOD;
+}
+
+function buildSessionRecords(chatSessions) {
+  return chatSessions
+    .map((session, index) => {
+      const assistant = [...session].reverse().find(message => message.role === "ai" &&
+        (message.type === "friend" || message.type === "response"));
+      if (!assistant) return null;
+      const timestamp = Number(session.timestamp) || Date.now();
+      return {
+        index,
+        timestamp,
+        mood: getMoodDisplay(assistant),
+        severity: assistant.severity || "Low",
+        userMessage: session.find(message => message.role === "user")?.text || "",
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function getWeekRange(weekOffset) {
   const now = new Date();
   const todayDow = now.getDay();
   const monday = new Date(now);
@@ -23,61 +65,127 @@ function buildMoodData(chatSessions, weekOffset) {
   const sunday = new Date(monday);
   sunday.setDate(monday.getDate() + 6);
   sunday.setHours(23, 59, 59, 999);
+  return { monday, sunday };
+}
+
+/* Build 7-day mood data grouped by each saved session's timestamp. */
+function buildMoodData(sessionRecords, weekOffset) {
+  const { monday, sunday } = getWeekRange(weekOffset);
 
   const dayMap = {};
-  chatSessions.forEach(s => {
-    if (!s.timestamp) return;
-    const date = new Date(s.timestamp);
+  sessionRecords.forEach(session => {
+    const date = new Date(session.timestamp);
     if (date < monday || date > sunday) return;
-    const last = [...s].reverse().find(m => m.role==="ai" && m.type==="response");
-    if (!last) return;
-    const mood = last?.mood ? MOOD_TO_DISPLAY[last.mood] : SEV_TO_MOOD[last?.severity?.toLowerCase()] || DEFAULT_MOOD;
     const dow = date.getDay();
     const dayLabel = DAYS[dow === 0 ? 6 : dow - 1];
     if (!dayMap[dayLabel]) dayMap[dayLabel] = [];
-    dayMap[dayLabel].push(mood.value);
+    dayMap[dayLabel].push(session.mood.value);
   });
 
   return DAYS.map(day => {
     const values = dayMap[day];
     if (!values || values.length === 0) return { day, value: null, emoji: null, color: null, label: null };
     const avg = values.reduce((a, b) => a + b, 0) / values.length;
-    const rounded = Math.round(avg);
-    const allMoods = Object.values(MOOD_TO_DISPLAY);
-    const match = allMoods.find(m => m.value === rounded) || DEFAULT_MOOD;
+    const match = getMoodForScore(avg);
     return { day, value: avg, emoji: match.emoji, color: match.color, label: match.label || "Okay" };
   });
 }
 
-/* Compute influence percentages ONLY from real session data */
-function computeInfluences(chatSessions) {
+function buildAnalytics(chatSessions, weekOffset) {
+  const sessionRecords = buildSessionRecords(chatSessions);
+  const moodData = buildMoodData(sessionRecords, weekOffset);
   const counts = { low:0, moderate:0, high:0 };
-  chatSessions.forEach(s => {
-    const last = [...s].reverse().find(m => m.role==="ai" && m.type==="response");
-    if (last?.severity) counts[last.severity.toLowerCase()] = (counts[last.severity.toLowerCase()]||0) + 1;
+  const classifications = { positive: 0, neutral: 0, negative: 0 };
+  const days = {};
+
+  sessionRecords.forEach(session => {
+    const severity = session.severity.toLowerCase();
+    if (counts[severity] !== undefined) counts[severity] += 1;
+    if (session.mood.value >= 4) classifications.positive += 1;
+    else if (session.mood.value === 3) classifications.neutral += 1;
+    else classifications.negative += 1;
+
+    const day = DAYS[new Date(session.timestamp).getDay() === 0 ? 6 : new Date(session.timestamp).getDay() - 1];
+    if (!days[day]) days[day] = [];
+    days[day].push(session.mood.value);
   });
-  const total = chatSessions.length || 1;
-  const positiveRate = Math.round((counts.low / total) * 100);
-  const negativeRate = Math.round(((counts.moderate + counts.high) / total) * 100);
-  return { positiveRate, negativeRate, total };
+
+  const total = sessionRecords.length;
+  const average = total
+    ? sessionRecords.reduce((sum, session) => sum + session.mood.value, 0) / total
+    : null;
+  const averageMood = average === null
+    ? null
+    : getMoodForScore(average);
+  const dailyAverages = Object.entries(days).map(([day, values]) => ({
+    day,
+    value: values.reduce((sum, value) => sum + value, 0) / values.length,
+  })).map(day => ({ ...day, mood: getMoodForScore(day.value) }));
+
+  return {
+    sessionRecords,
+    moodData,
+    severityCounts: counts,
+    classifications,
+    averageMood,
+    bestDay: dailyAverages.reduce((best, day) => !best || day.value > best.value ? day : best, null),
+    worstDay: dailyAverages.reduce((worst, day) => !worst || day.value < worst.value ? day : worst, null),
+  };
 }
 
 export default function MoodChart({ onClose, chatSessions, onStartChat }) {
   const [selectedMood, setSelectedMood] = useState(null);
   const [weekOffset,   setWeekOffset]   = useState(0);
+  const [weeklySummary, setWeeklySummary] = useState({ key: "", text: "" });
 
-  const hasSessions  = chatSessions.length > 0;
-  const moodData = hasSessions ? buildMoodData(chatSessions, weekOffset) : [];
+  const analytics = useMemo(
+    () => buildAnalytics(chatSessions, weekOffset),
+    [chatSessions, weekOffset]
+  );
+  const { sessionRecords, moodData, severityCounts, classifications, averageMood, bestDay, worstDay } = analytics;
+  const hasSessions = sessionRecords.length > 0;
   const pts          = moodData.map((d,i) => ({...d,i})).filter(d => d.value !== null);
-  const influences   = hasSessions ? computeInfluences(chatSessions) : null;
-
-  // Stats
-  const validMoods = moodData.filter(d => d.value !== null);
-  const avgMood    = validMoods.length
-    ? (validMoods.reduce((s,d) => s+d.value,0) / validMoods.length).toFixed(1) : "—";
-  const bestDay    = validMoods.length ? validMoods.reduce((b,d) => d.value>(b?.value||0)?d:b, null) : null;
-  const worstDay   = validMoods.length ? validMoods.reduce((w,d) => d.value<(w?.value||99)?d:w, null) : null;
+  const total = sessionRecords.length || 1;
+  const influences = {
+    positiveRate: Math.round((classifications.positive / total) * 100),
+    neutralRate: Math.round((classifications.neutral / total) * 100),
+    negativeRate: Math.round((classifications.negative / total) * 100),
+  };
   const todayLabel = DAYS[new Date().getDay()===0?6:new Date().getDay()-1];
+
+  const summarySessions = useMemo(() => buildSessionRecords(chatSessions).map(session => ({
+    timestamp: session.timestamp,
+    user_message: session.userMessage,
+    mood: session.mood.label,
+    severity: session.severity,
+  })), [chatSessions]);
+  const summaryKey = JSON.stringify(summarySessions);
+
+  useEffect(() => {
+    if (!summarySessions.length) {
+      return;
+    }
+    let active = true;
+    fetch("http://127.0.0.1:8000/analytics/weekly-summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessions: summarySessions }),
+    })
+      .then(response => {
+        if (!response.ok) throw new Error("Unable to generate the weekly summary");
+        return response.json();
+      })
+      .then(data => {
+        if (active) setWeeklySummary({ key: summaryKey, text: data.summary });
+      })
+      .catch(() => {
+        if (active) setWeeklySummary({
+          key: summaryKey,
+          text: "Your session data is available above, but the AI weekly summary is temporarily unavailable.",
+        });
+      });
+    return () => { active = false; };
+  }, [summaryKey, summarySessions]);
 
   // SVG chart
   const CW=800, CH=160;
@@ -130,7 +238,7 @@ export default function MoodChart({ onClose, chatSessions, onStartChat }) {
           <h1 style={{fontSize:"clamp(1.4rem,3vw,2rem)",fontWeight:800,color:"var(--text)"}}>Mood Analysis</h1>
           <p style={{fontSize:13,color:"var(--text-soft)",marginTop:4}}>
             {hasSessions
-              ? `Based on ${chatSessions.length} session${chatSessions.length>1?"s":""}`
+              ? `Based on ${sessionRecords.length} session${sessionRecords.length>1?"s":""}`
               : "Complete a chat session to unlock your mood insights"}
           </p>
         </div>
@@ -138,10 +246,10 @@ export default function MoodChart({ onClose, chatSessions, onStartChat }) {
         {/* Stats row */}
         <div className="mc-stats">
           {[
-            { label:"Avg Mood",  value: avgMood,              sub:"this week"          },
-            { label:"Best Day",  value: bestDay?.day  || "—", sub: bestDay?.label  || "" },
-            { label:"Worst Day", value: worstDay?.day || "—", sub: worstDay?.label || "" },
-            { label:"Sessions",  value: chatSessions.length,  sub:"recorded"           },
+            { label:"Avg Mood",  value: averageMood?.label || "—", sub:"all sessions" },
+            { label:"Best Day",  value: bestDay?.day  || "—", sub: bestDay?.mood.label  || "" },
+            { label:"Worst Day", value: worstDay?.day || "—", sub: worstDay?.mood.label || "" },
+            { label:"Sessions",  value: sessionRecords.length, sub:"recorded"          },
           ].map(s => (
             <div key={s.label} className="mc-stat-card">
               <span className="mc-stat-val">{s.value}</span>
@@ -159,7 +267,7 @@ export default function MoodChart({ onClose, chatSessions, onStartChat }) {
 
             {/* Check-in card */}
             <div className="mc-card">
-              <p className="mc-eyebrow">{hasSessions ? `${chatSessions.length}TH CHECK-IN` : "CHECK-IN"}</p>
+              <p className="mc-eyebrow">{hasSessions ? `${sessionRecords.length}TH CHECK-IN` : "CHECK-IN"}</p>
               <h2 className="mc-card-title" style={{marginBottom:20}}>How are you today?</h2>
               <div style={{display:"flex",justifyContent:"space-around",alignItems:"flex-end"}}>
                 {MOOD_OPTIONS.map(m => (
@@ -285,36 +393,29 @@ export default function MoodChart({ onClose, chatSessions, onStartChat }) {
                 </div>
               ) : (
                 <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                  {chatSessions.map((session,i) => {
-                    const last     = [...session].reverse().find(m=>m.role==="ai"&&m.type==="response");
-                    const mood     = last ? (SEV_TO_MOOD[last.severity?.toLowerCase()]||DEFAULT_MOOD) : DEFAULT_MOOD;
-                    const firstMsg = session.find(m=>m.role==="user")?.text || "";
-                    const sevColor = SEV_COLOR[last?.severity?.toLowerCase()] || "#94a3b8";
+                  {sessionRecords.map((record,i) => {
+                    const { mood, severity, userMessage } = record;
+                    const sevColor = SEV_COLOR[severity.toLowerCase()] || "#94a3b8";
                     return (
-                      <div key={i} className="mc-session">
+                      <div key={`${record.timestamp}-${record.index}`} className="mc-session">
                         <div className="mc-session-dot" style={{background:mood.color}}>
                           <span>{mood.emoji}</span>
                         </div>
                         <div style={{flex:1,minWidth:0}}>
                           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
                             <span style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>
-                              Session {chatSessions.length-i}
+                              Session {sessionRecords.length-i}
                             </span>
-                            {last && (
+                            {severity && (
                               <span className="mc-sev-badge" style={{background:sevColor+"22",color:sevColor}}>
-                                {last.severity}
+                                {severity}
                               </span>
                             )}
                           </div>
                           <p style={{fontSize:11,color:"#9ca3af",margin:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                            {firstMsg.slice(0,55)}{firstMsg.length>55?"…":""}
+                            {userMessage.slice(0,55)}{userMessage.length>55?"…":""}
                           </p>
                         </div>
-                        {last?.risk_score  != null && (
-                          <span style={{fontSize:12,fontWeight:700,color:"var(--text)",flexShrink:0}}>
-                            {last.risk_score.toFixed(1)} / 5
-                          </span>
-                        )}
                       </div>
                     );
                   })}
@@ -348,6 +449,19 @@ export default function MoodChart({ onClose, chatSessions, onStartChat }) {
                       </div>
                     </div>
                   </div>
+                  {/* Neutral sessions */}
+                  <div style={{display:"flex",alignItems:"center",gap:12}}>
+                    <div className="mc-inf-icon" style={{background:"#fffbeb"}}>😐</div>
+                    <div style={{flex:1}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                        <span style={{fontSize:13,fontWeight:600,color:"var(--text)"}}>Neutral sessions</span>
+                        <span style={{fontSize:12,fontWeight:700,color:"#E8B84B"}}>{influences.neutralRate}%</span>
+                      </div>
+                      <div className="mc-bar-bg">
+                        <div className="mc-bar-fill" style={{width:`${influences.neutralRate}%`,background:"linear-gradient(90deg,#fde68a,#E8B84B)"}}/>
+                      </div>
+                    </div>
+                  </div>
                   {/* Negative sessions */}
                   <div style={{display:"flex",alignItems:"center",gap:12}}>
                     <div className="mc-inf-icon" style={{background:"#fff1f2"}}>😔</div>
@@ -365,13 +479,7 @@ export default function MoodChart({ onClose, chatSessions, onStartChat }) {
                   <div style={{marginTop:4,padding:"12px 14px",background:"rgba(99,102,241,.05)",borderRadius:12,border:"1px solid rgba(99,102,241,.1)"}}>
                     <p style={{fontSize:11,fontWeight:700,color:"var(--text-soft)",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.08em"}}>Severity breakdown</p>
                     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                      {Object.entries(
-                        chatSessions.reduce((acc,s) => {
-                          const last = [...s].reverse().find(m=>m.role==="ai"&&m.type==="response");
-                          if (last?.severity) acc[last.severity.toLowerCase()] = (acc[last.severity.toLowerCase()]||0)+1;
-                          return acc;
-                        },{})
-                      ).map(([sev,count]) => (
+                      {Object.entries(severityCounts).map(([sev,count]) => (
                         <span key={sev} style={{
                           fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:99,
                           background:(SEV_COLOR[sev]||"#94a3b8")+"22",
@@ -386,6 +494,18 @@ export default function MoodChart({ onClose, chatSessions, onStartChat }) {
                 </div>
               )}
             </div>
+
+            {hasSessions && (
+              <div className="mc-card">
+                <h2 className="mc-card-title" style={{marginBottom:4}}>AI Weekly Summary</h2>
+                <p style={{fontSize:12,color:"var(--text-soft)",marginBottom:12}}>
+                  Based on your recent session history
+                </p>
+                <p style={{fontSize:13,color:"var(--text)",lineHeight:1.6,margin:0}}>
+                  {weeklySummary.key === summaryKey ? weeklySummary.text : "Generating your weekly summary…"}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>

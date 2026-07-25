@@ -228,31 +228,24 @@ export default function App() {
   }, [messages, loading]);
   
 
-// Show data.reply as Alex's message
-// Use data.mood to quietly update a vibe indicator
-// If data.is_crisis === true, show a soft "you're not alone" banner
-  // Replace your existing send() function with this:
   const send = async (text) => {
-  text = (text || input).trim();
-  if (!text || loading) return;
-  setChatOpen(true);
-  setMessages(p => [...p, { role: "user", type: "text", text }]);
-  setInput("");
-  setLoading(true);
-  try {
-    const endpoint = friendMode ? "/chat" : "/predict";
-    const res = await fetch(`http://127.0.0.1:8000${endpoint}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) throw new Error();
-    const data = await res.json();
+    text = (text || input).trim();
+    if (!text || loading) return;
+    setChatOpen(true);
+    setMessages(p => [...p, { role: "user", type: "text", text }]);
+    setInput("");
+    setLoading(true);
+    try {
+      const res = await fetch("http://127.0.0.1:8000/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
 
-    if (data.is_crisis) setShowCrisis(true);
+      if (data.is_crisis) setShowCrisis(true);
 
-    if (friendMode) {
-      // Alex replies like a friend — no clinical card shown
       setMessages(p => [...p, {
         role: "ai",
         type: "friend",
@@ -261,20 +254,9 @@ export default function App() {
         is_crisis: data.is_crisis,
         severity: data.mood === "crisis" ? "High" : data.mood === "low" ? "High" : data.mood === "okay" ? "Moderate" : "Low",
       }]);
-    } else {
-      setMessages(p => [...p, {
-        role: "ai",
-        type: "response",
-        risk_score: data.risk_score,
-        severity: data.severity,
-        mood: data.mood,
-        support_message: data.support_message,
-        is_crisis: data.is_crisis,
-      }]);
-    }
-  } catch {
-    setMessages(p => [...p, { role: "ai", type: "text", text: "⚠️ Couldn't reach the server. Please try again." }]);
-  } finally { setLoading(false); }
+    } catch {
+      setMessages(p => [...p, { role: "ai", type: "text", text: "⚠️ Couldn't reach the server. Please try again." }]);
+    } finally { setLoading(false); }
   };
 
 

@@ -1,6 +1,11 @@
 import torch
 import torch.nn.functional as F
-from openai import OpenAI
+import os
+import traceback
+from pathlib import Path
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -12,11 +17,11 @@ import json
 from database import SessionLocal, engine
 from models import Base, Chat
 
-# 1. SETUP OLLAMA (Local AI)
-client = OpenAI(
-    base_url="http://localhost:11434/v1",
-    api_key="ollama",
-)
+# 1. SETUP GEMINI
+# Load the backend .env regardless of the directory used to start Uvicorn.
+load_dotenv(Path(__file__).with_name(".env"))
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+GEMINI_MODEL = "gemini-3.6-flash"
 
 app = FastAPI()
 
@@ -56,12 +61,48 @@ class ChatInput(BaseModel):
     message: str
     session_id: str = "default"    
 
+class AnalyticsSession(BaseModel):
+    timestamp: int
+    user_message: str
+    mood: str
+    severity: str
+
+class WeeklySummaryRequest(BaseModel):
+    sessions: List[AnalyticsSession]
+
 # 4. HELPER FUNCTIONS
+def generate_gemini_response(system_instruction: str, messages: list, temperature: float) -> str:
+    """Generate a response while preserving the existing conversation history."""
+    try:
+        contents = [
+            types.Content(
+                role="model" if message["role"] == "assistant" else "user",
+                parts=[types.Part.from_text(text=message["content"])],
+            )
+            for message in messages
+        ]
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=temperature,
+            ),
+        )
+        if not response.text:
+            raise ValueError("Gemini returned an empty response")
+        return response.text
+    except Exception as error:
+        print(f"Gemini model: {GEMINI_MODEL}")
+        error_response = getattr(error, "response", None)
+        print(f"Gemini response: {getattr(error_response, 'text', error_response)}")
+        traceback.print_exc()
+        raise
+
+
 def generate_support_response(user_message, severity, history):
     try:
-        messages = [
-            {
-                "content": f"""
+        system_prompt = f"""
                 You are a supportive AI mental wellness companion.
 
                 IMPORTANT RULES:
@@ -77,8 +118,7 @@ def generate_support_response(user_message, severity, history):
 
                 Detected severity: {severity}
                 """
-            }
-        ]
+        messages = []
 
         for chat in history:
             messages.append({"role": "user",      "content": chat.user_message})
@@ -86,15 +126,10 @@ def generate_support_response(user_message, severity, history):
 
         messages.append({"role": "user", "content": user_message})
 
-        response = client.chat.completions.create(
-            model="llama3.2:1b",
-            messages=messages,
-            temperature=0.7
-        )
-        return response.choices[0].message.content
+        return generate_gemini_response(system_prompt, messages, temperature=0.7)
 
     except Exception as e:
-        print(f"Ollama Error: {e}")
+        print(f"Gemini Error: {e}")
         return "I'm listening. Can you tell me more about that?"
 # Add this helper function (section 4, after generate_support_response)
 def generate_friend_response(user_message: str, severity: str, is_crisis: bool, history):
@@ -141,7 +176,7 @@ Tone guidance for this message:
 {tone_instruction}
 """
 
-    messages = [{"role": "system", "content": system_prompt}]
+    messages = []
 
     # Include last 5 messages of history for context
     for chat in history:
@@ -151,18 +186,15 @@ Tone guidance for this message:
     messages.append({"role": "user", "content": user_message})
 
     try:
-        response = client.chat.completions.create(
-            model="llama3.2:1b",
-            messages=messages,
-            temperature=0.85,  # slightly higher = more natural/varied friend responses
-        )
-        return response.choices[0].message.content.strip()
+        return generate_gemini_response(
+            system_prompt, messages, temperature=0.85
+        ).strip()
     except Exception as e:
         print(f"Friend response error: {e}")
         return "haha sorry my brain just blanked 😅 what were you saying?"
 
 def analyze_tat_stories(scenes: List[TATScene]) -> dict:
-    """Send TAT stories to Ollama and get back a structured JSON analysis."""
+    """Send TAT stories to Gemini and get back a structured JSON analysis."""
 
     story_summary = "\n\n".join(
         f'Scene {i+1} (Theme: "{s.theme}"):\n"{s.story}"'
@@ -201,16 +233,11 @@ Rules:
 
     user_prompt = f"Analyze these {len(scenes)} TAT stories and return the JSON profile:\n\n{story_summary}"
 
-    response = client.chat.completions.create(
-        model="llama3.2:1b",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_prompt},
-        ],
-        temperature=0.4,   # lower = more consistent JSON output
-    )
-
-    raw = response.choices[0].message.content.strip()
+    raw = generate_gemini_response(
+        system_prompt,
+        [{"role": "user", "content": user_prompt}],
+        temperature=0.4,
+    ).strip()
 
     # Strip any accidental markdown fences
     clean = raw.replace("```json", "").replace("```", "").strip()
@@ -314,7 +341,7 @@ def predict(input_data: TextInput):
 def tat_analyze(req: TATRequest):
     """
     Receives TAT scene stories from the React frontend,
-    sends them to local Ollama for analysis,
+    sends them to Gemini for analysis,
     and returns a structured psychological profile.
     """
     try:
@@ -416,3 +443,22 @@ def chat(input_data: TextInput):
         # is_crisis kept for frontend to optionally show a subtle care banner
         "is_crisis": is_crisis
     }
+
+
+@app.post("/analytics/weekly-summary")
+def analytics_weekly_summary(request: WeeklySummaryRequest):
+    """Create an on-demand dashboard summary without persisting it."""
+    recent_sessions = request.sessions[:10]
+    session_context = "\n".join(
+        f"- Mood: {session.mood}; severity: {session.severity}; user said: {session.user_message}"
+        for session in recent_sessions
+    )
+    system_prompt = """You write concise, warm weekly mood summaries for a mental wellness dashboard.
+Use only the provided session history. Mention clear trends without diagnosing or overstating certainty.
+Offer one gentle, practical suggestion. Keep the response to 2 sentences."""
+    summary = generate_gemini_response(
+        system_prompt,
+        [{"role": "user", "content": f"Recent sessions:\n{session_context}"}],
+        temperature=0.4,
+    ).strip()
+    return {"summary": summary}
